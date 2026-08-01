@@ -1,0 +1,11 @@
+__pycache__/
+build/
+dist/
+*.spec
+*.gif
+*.jpg
+*.jpeg
+*.png
+.DS_Store
+*.pyc
+*.pyo
