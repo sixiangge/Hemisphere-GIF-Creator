@@ -62,6 +62,7 @@ def create_hemisphere_gif(
     output_size: int = None,
     axis: str = "y",
     bg_color: tuple = (0, 0, 0),
+    power: float = 1.25,
 ):
     """
     核心函数：将输入图片映射到半球面并旋转生成 GIF。
@@ -109,9 +110,6 @@ def create_hemisphere_gif(
     print(f"[2/4] Rendering {num_frames} frames...")
     frames = []
 
-    # 球面变形强度：> 1.0 则中心占比更大（越大中心占比越高）
-    power = 1.25
-
     # 正面亮度（直接使用原图颜色）
     front_brightness = 1.0
 
@@ -157,12 +155,12 @@ def create_hemisphere_gif(
         any_back  = np.any(back_vis)
 
         if not any_front and not any_back:
-            frame = np.full((output_size, output_size, 3), bg_color, dtype=np.uint8)
-            frames.append(Image.fromarray(frame))
+            frame = np.zeros((output_size, output_size, 4), dtype=np.uint8)
+            frames.append(Image.fromarray(frame, 'RGBA'))
             continue
 
-        # ── 创建输出帧 ──
-        frame = np.full((output_size, output_size, 3), bg_color, dtype=np.float32)
+        # ── 创建输出帧（RGBA：背景透明）──
+        frame = np.zeros((output_size, output_size, 4), dtype=np.float32)
 
         # ═══════════════════════════════════════════════════════
         # ◆ 渲染正面 ◆
@@ -175,7 +173,8 @@ def create_hemisphere_gif(
             # 正面保持固定亮度
             colors_f = colors_f * front_brightness
 
-            frame[front_vis] = colors_f[front_vis]
+            frame[front_vis, :3] = colors_f[front_vis]
+            frame[front_vis, 3] = 255.0
 
         # ═══════════════════════════════════════════════════════
         # ◆ 渲染背面 ◆ （亮度比正面暗，呈现立体纵深感）
@@ -188,27 +187,48 @@ def create_hemisphere_gif(
             # 背面亮度（比正面稍暗）
             colors_b = colors_b * back_brightness
 
-            frame[back_vis] = colors_b[back_vis]
+            frame[back_vis, :3] = colors_b[back_vis]
+            frame[back_vis, 3] = 255.0
 
-        # 裁剪并转换
+        # 裁剪并转换为 RGBA
         frame = np.clip(frame, 0, 255).astype(np.uint8)
-        frames.append(Image.fromarray(frame))
+        frames.append(Image.fromarray(frame, 'RGBA'))
 
         # 进度提示
         if (frame_idx + 1) % 15 == 0 or frame_idx == 0:
             pct = (frame_idx + 1) / num_frames * 100
             print(f"   Progress: {frame_idx + 1}/{num_frames} ({pct:.0f}%)")
 
-    # ── 4. 保存 GIF ──────────────────────────────────────────
+    # ── 4. 保存 GIF（透明背景）─────────────────────────────────
     print(f"[3/4] Saving GIF: {output_path}")
-    frames[0].save(
+
+    # 将 RGBA 帧转为调色板模式，透明像素统一映射到索引 255
+    gif_frames = []
+    for img_rgba in frames:
+        # 使用 255 色量化，留出索引 255 给透明色
+        img_p = img_rgba.quantize(colors=255, method=Image.Quantize.FASTOCTREE)
+        palette = img_p.getpalette()
+        # 在末尾追加透明黑色
+        palette.extend([0, 0, 0])
+        # 获取背景像素的调色板索引
+        bg_idx = img_p.getpixel((0, 0))
+        # 将所有背景像素重映射到索引 255
+        arr = np.array(img_p, dtype=np.uint8)
+        arr[arr == bg_idx] = 255
+        img_p = Image.fromarray(arr, 'P')
+        img_p.putpalette(palette)
+        img_p.info['transparency'] = 255
+        gif_frames.append(img_p)
+
+    gif_frames[0].save(
         output_path,
         save_all=True,
-        append_images=frames[1:],
+        append_images=gif_frames[1:],
         duration=duration,
         loop=0,          # 无限循环
-        optimize=False,  # 关闭优化以保持画质
+        optimize=False,
         disposal=2,      # 每帧恢复背景
+        transparency=255,
     )
 
     # 文件大小

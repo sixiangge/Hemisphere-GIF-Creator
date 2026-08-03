@@ -10,6 +10,8 @@ from PIL import Image, ImageTk
 import threading
 import os
 import tempfile
+import win32clipboard
+from io import BytesIO
 
 from hemisphere_gif import create_hemisphere_gif
 
@@ -29,6 +31,11 @@ class UploadBox(tk.Frame):
         self.canvas.pack()
         self.canvas.bind("<Button-1>", self._on_click)
 
+        # 右键菜单
+        self.canvas.bind("<Button-3>", self._on_right_click)
+        self._context_menu = tk.Menu(self, tearoff=0)
+        self._context_menu.add_command(label="粘贴图片", command=self._on_paste)
+
         self._draw_placeholder()
 
     def _draw_placeholder(self):
@@ -42,7 +49,7 @@ class UploadBox(tk.Frame):
         self.canvas.create_line(cx, cy - plus_size, cx, cy + plus_size,
                                 fill="#999999", width=4)
         self.canvas.create_text(cx, cy + plus_size + 30,
-                                text="点击上传\nJPG / PNG",
+                                text="点击上传\n右键可粘贴图片",
                                 fill="#999999", font=("Microsoft YaHei", 11),
                                 justify="center")
 
@@ -53,6 +60,33 @@ class UploadBox(tk.Frame):
         )
         if path:
             self.load_image(path)
+
+    def _on_right_click(self, event):
+        """右键弹出菜单。"""
+        self._context_menu.tk_popup(event.x_root, event.y_root)
+
+    def _on_paste(self, event=None):
+        """从剪贴板粘贴图片（win32clipboard，快速可靠）。"""
+        try:
+            win32clipboard.OpenClipboard()
+            try:
+                if not win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_DIB):
+                    messagebox.showinfo("粘贴失败", "剪贴板中没有图片，请先截图或复制一张图片。")
+                    return
+                data = win32clipboard.GetClipboardData(win32clipboard.CF_DIB)
+            finally:
+                win32clipboard.CloseClipboard()
+
+            # CF_DIB 转 PIL Image
+            img = Image.open(BytesIO(data))
+            fd, tmp_path = tempfile.mkstemp(suffix=".png")
+            os.close(fd)
+            if img.mode == 'RGBA':
+                img = img.convert('RGB')
+            img.save(tmp_path, 'PNG')
+            self.load_image(tmp_path)
+        except Exception as e:
+            messagebox.showinfo("粘贴失败", f"无法读取剪贴板：{e}")
 
     def load_image(self, path):
         self.image_path = path
@@ -84,6 +118,12 @@ class PreviewBox(tk.Frame):
                                 bg="#f0f0f0", highlightthickness=2,
                                 highlightbackground="#cccccc")
         self.canvas.pack()
+
+        # 右键菜单
+        self.canvas.bind("<Button-3>", self._on_right_click)
+        self._context_menu = tk.Menu(self, tearoff=0)
+        self._context_menu.add_command(label="复制图片", command=self._copy_to_clipboard)
+
         self._draw_placeholder()
 
     def _draw_placeholder(self):
@@ -132,6 +172,30 @@ class PreviewBox(tk.Frame):
                 messagebox.showinfo("完成", f"已保存到：\n{dest}")
             except Exception as e:
                 messagebox.showerror("错误", f"保存失败：{e}")
+
+    def _on_right_click(self, event):
+        """右键弹出菜单。"""
+        if self.output_path:
+            self._context_menu.tk_popup(event.x_root, event.y_root)
+
+    def _copy_to_clipboard(self):
+        """将生成的 GIF 复制到剪贴板。"""
+        if not self.output_path:
+            return
+        try:
+            from PIL import Image
+            img = Image.open(self.output_path)
+            # 转为位图放入剪贴板
+            output = BytesIO()
+            img.convert('RGB').save(output, 'BMP')
+            data = output.getvalue()[14:]  # 去掉 BMP 文件头，保留 DIB 数据
+            output.close()
+            win32clipboard.OpenClipboard()
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardData(win32clipboard.CF_DIB, data)
+            win32clipboard.CloseClipboard()
+        except Exception as e:
+            messagebox.showerror("复制失败", f"无法复制到剪贴板：{e}")
 
     def reset(self):
         self.output_path = None
@@ -210,17 +274,23 @@ class HemisphereApp:
         row2.pack(pady=3)
 
         self._make_param(row2, "旋转轴：", "axis", None, 0, "", is_combo=True, combo_vals=["y", "x"])
-        self._make_param(row2, "背景 R：", "bg_r", "0", 1, "")
-        self._make_param(row2, "背景 G：", "bg_g", "0", 2, "")
-        self._make_param(row2, "背景 B：", "bg_b", "0", 3, "")
+        self._make_param(row2, "变形：", "power", "1.25", 1, "")
+
+        row3 = tk.Frame(param_frame, bg=BG)
+        row3.pack(pady=3)
+
+        self._make_param(row3, "背景 R：", "bg_r", "0", 0, "")
+        self._make_param(row3, "背景 G：", "bg_g", "0", 1, "")
+        self._make_param(row3, "背景 B：", "bg_b", "0", 2, "")
 
         self.params = {}
-        for w in param_frame.winfo_children():
-            for c in w.winfo_children():
-                if isinstance(c, tk.Entry):
-                    self.params[c._param_name] = c
-                elif isinstance(c, ttk.Combobox):
-                    self.params[c._param_name] = c
+        for row in param_frame.winfo_children():
+            for f in row.winfo_children():
+                for c in f.winfo_children():
+                    if isinstance(c, tk.Entry):
+                        self.params[c._param_name] = c
+                    elif isinstance(c, ttk.Combobox):
+                        self.params[c._param_name] = c
 
         self.running = False
         self._output_temp = None
@@ -251,7 +321,7 @@ class HemisphereApp:
             return default
         val = w.get().strip()
         if not val:
-            return None if dtype is not str else ""
+            return default
         try:
             return dtype(val)
         except ValueError:
@@ -275,6 +345,7 @@ class HemisphereApp:
         duration = self._get_param("duration", int, 50)
         size = self._get_param("size", int, None)
         axis = self._get_param("axis", str, "y")
+        power = self._get_param("power", float, 1.25)
         bg_r = self._get_param("bg_r", int, 0)
         bg_g = self._get_param("bg_g", int, 0)
         bg_b = self._get_param("bg_b", int, 0)
@@ -296,6 +367,7 @@ class HemisphereApp:
                     output_size=size,
                     axis=axis,
                     bg_color=(bg_r, bg_g, bg_b),
+                    power=power,
                 )
                 self.root.after(0, self._on_done, output_temp)
             except Exception as e:
