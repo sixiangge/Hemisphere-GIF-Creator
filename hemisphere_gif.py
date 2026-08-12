@@ -78,11 +78,23 @@ def create_hemisphere_gif(
     4. 施加光照增强立体感
     """
 
-    # ── 0. 计算每帧持续时间（从 rps 推导） ─────────────────
+    # ── 0. 处理转速并计算每帧持续时间 ─────────────────────
     # GIF 帧延迟以百分之一秒(cs)存储，delay≤2cs 时多数播放器
     # 会强制按 100ms 处理。因此每帧至少 30ms (3cs) 保证兼容。
     GIF_MIN_MS = 30
-    if duration is None:
+
+    # rps=0：生成静态正面视角图片（PNG），不旋转
+    is_static = (rps <= 0.0)
+
+    if is_static:
+        effective_frames = 1
+        duration = 0  # 静态图片不需要帧延迟
+        # 将输出路径后缀改为 .png
+        if '.' in output_path:
+            output_path = output_path.rsplit('.', 1)[0] + '.png'
+        else:
+            output_path = output_path + '.png'
+    elif duration is None:
         target_ms = 1000.0 / (rps * num_frames)
         if target_ms < GIF_MIN_MS:
             # 帧数太多会导致每帧延迟过短 → 自动减少帧数以保证 rps 准确
@@ -219,45 +231,55 @@ def create_hemisphere_gif(
             pct = (frame_idx + 1) / effective_frames * 100
             print(f"   Progress: {frame_idx + 1}/{effective_frames} ({pct:.0f}%)")
 
-    # ── 4. 保存 GIF（透明背景）─────────────────────────────────
-    print(f"[3/4] Saving GIF: {output_path}")
+    # ── 4. 保存输出 ─────────────────────────────────────
+    import os
 
-    # 将 RGBA 帧转为调色板模式，透明像素统一映射到索引 255
-    gif_frames = []
-    for img_rgba in frames:
-        # 使用 255 色量化，留出索引 255 给透明色
-        img_p = img_rgba.quantize(colors=255, method=Image.Quantize.FASTOCTREE)
-        palette = img_p.getpalette()
-        # 在末尾追加透明黑色
-        palette.extend([0, 0, 0])
-        # 获取背景像素的调色板索引
-        bg_idx = img_p.getpixel((0, 0))
-        # 将所有背景像素重映射到索引 255
-        arr = np.array(img_p, dtype=np.uint8)
-        arr[arr == bg_idx] = 255
-        img_p = Image.fromarray(arr, 'P')
-        img_p.putpalette(palette)
-        img_p.info['transparency'] = 255
-        gif_frames.append(img_p)
+    if is_static:
+        # ── 静态模式：保存带透明底的 PNG 图片 ──
+        print(f"[3/4] Saving static image (PNG): {output_path}")
+        frames[0].save(output_path, 'PNG')
+    else:
+        # ── 动画模式：保存 GIF ──
+        print(f"[3/4] Saving GIF: {output_path}")
 
-    gif_frames[0].save(
-        output_path,
-        save_all=True,
-        append_images=gif_frames[1:],
-        duration=duration,
-        loop=0,          # 无限循环
-        optimize=False,
-        disposal=2,      # 每帧恢复背景
-        transparency=255,
-    )
+        # 将 RGBA 帧转为调色板模式，透明像素统一映射到索引 255
+        gif_frames = []
+        for img_rgba in frames:
+            # 使用 255 色量化，留出索引 255 给透明色
+            img_p = img_rgba.quantize(colors=255, method=Image.Quantize.FASTOCTREE)
+            palette = img_p.getpalette()
+            # 在末尾追加透明黑色
+            palette.extend([0, 0, 0])
+            # 获取背景像素的调色板索引
+            bg_idx = img_p.getpixel((0, 0))
+            # 将所有背景像素重映射到索引 255
+            arr = np.array(img_p, dtype=np.uint8)
+            arr[arr == bg_idx] = 255
+            img_p = Image.fromarray(arr, 'P')
+            img_p.putpalette(palette)
+            img_p.info['transparency'] = 255
+            gif_frames.append(img_p)
+
+        gif_frames[0].save(
+            output_path,
+            save_all=True,
+            append_images=gif_frames[1:],
+            duration=duration,
+            loop=0,          # 无限循环
+            optimize=False,
+            disposal=2,      # 每帧恢复背景
+            transparency=255,
+        )
 
     # 文件大小
-    import os
     file_size = os.path.getsize(output_path)
     print(f"[4/4] Done!")
     print(f"    Output: {output_path}")
     print(f"    Size: {file_size / 1024:.1f} KB")
-    print(f"    Frames: {effective_frames} | Resolution: {output_size}x{output_size} | Radius: {radius}px | Speed: {rps:.3f} rps ({duration}ms/frame)")
+    if is_static:
+        print(f"    Mode: static (rps=0) | Resolution: {output_size}x{output_size} | Radius: {radius}px")
+    else:
+        print(f"    Frames: {effective_frames} | Resolution: {output_size}x{output_size} | Radius: {radius}px | Speed: {rps:.3f} rps ({duration}ms/frame)")
 
 
 def main():
@@ -279,7 +301,7 @@ def main():
     parser.add_argument("--frames", type=int, default=60,
                         help="动画帧数 (默认: 60)")
     parser.add_argument("--rps", type=float, default=1.0/3.0,
-                        help="旋转速度，转/秒——数值越大越快 (默认: 0.333，即 3 秒转一圈)")
+                        help="旋转速度，转/秒——数值越大越快；设为 0 则输出静态正面 PNG (默认: 0.333)")
     parser.add_argument("--size", type=int, default=None,
                         help="输出画面尺寸，像素 (默认: 半径×2.5)")
     parser.add_argument("--axis", choices=["x", "y"], default="y",

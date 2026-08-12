@@ -165,11 +165,21 @@ class PreviewBox(tk.Frame):
             return
         self._saving = True
         try:
+            # 根据实际输出文件类型调整保存对话框
+            ext = os.path.splitext(self.output_path)[1].lower()
+            if ext == '.png':
+                filetypes = [("PNG 文件", "*.png"), ("所有文件", "*.*")]
+                initial = "hemisphere_output.png"
+                title = "保存图片"
+            else:
+                filetypes = [("GIF 文件", "*.gif"), ("所有文件", "*.*")]
+                initial = "hemisphere_output.gif"
+                title = "保存 GIF"
             dest = filedialog.asksaveasfilename(
-                title="保存 GIF",
-                defaultextension=".gif",
-                filetypes=[("GIF 文件", "*.gif"), ("所有文件", "*.*")],
-                initialfile="hemisphere_output.gif",
+                title=title,
+                defaultextension=ext,
+                filetypes=filetypes,
+                initialfile=initial,
             )
             if dest:
                 try:
@@ -360,7 +370,9 @@ class HemisphereApp:
         bg_g = self._get_param("bg_g", int, 0)
         bg_b = self._get_param("bg_b", int, 0)
 
-        fd, self._output_temp = tempfile.mkstemp(suffix=".gif")
+        # rps=0 → 静态图片用 .png，否则用 .gif
+        suffix = ".png" if rps <= 0 else ".gif"
+        fd, self._output_temp = tempfile.mkstemp(suffix=suffix)
         os.close(fd)
 
         input_path = self.upload_box.image_path
