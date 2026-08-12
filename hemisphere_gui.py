@@ -151,7 +151,8 @@ class PreviewBox(tk.Frame):
                                     fill="#4a90d9",
                                     font=("Microsoft YaHei", 9, "underline"),
                                     tags="save_hint")
-            self.canvas.tag_bind("save_hint", "<Button-1>", self._on_save)
+            # 先解绑再绑定，防止多次生成后绑定累积导致重复弹窗
+            self.canvas.unbind("<Button-1>")
             self.canvas.bind("<Button-1>", self._on_save)
         except Exception as e:
             messagebox.showerror("错误", f"加载预览失败：{e}")
@@ -159,19 +160,26 @@ class PreviewBox(tk.Frame):
     def _on_save(self, event=None):
         if not self.output_path:
             return
-        dest = filedialog.asksaveasfilename(
-            title="保存 GIF",
-            defaultextension=".gif",
-            filetypes=[("GIF 文件", "*.gif"), ("所有文件", "*.*")],
-            initialfile="hemisphere_output.gif",
-        )
-        if dest:
-            try:
-                import shutil
-                shutil.copy2(self.output_path, dest)
-                messagebox.showinfo("完成", f"已保存到：\n{dest}")
-            except Exception as e:
-                messagebox.showerror("错误", f"保存失败：{e}")
+        # 防止事件冒泡导致 _on_save 被多次调用
+        if getattr(self, '_saving', False):
+            return
+        self._saving = True
+        try:
+            dest = filedialog.asksaveasfilename(
+                title="保存 GIF",
+                defaultextension=".gif",
+                filetypes=[("GIF 文件", "*.gif"), ("所有文件", "*.*")],
+                initialfile="hemisphere_output.gif",
+            )
+            if dest:
+                try:
+                    import shutil
+                    shutil.copy2(self.output_path, dest)
+                    messagebox.showinfo("完成", f"已保存到：\n{dest}")
+                except Exception as e:
+                    messagebox.showerror("错误", f"保存失败：{e}")
+        finally:
+            self._saving = False
 
     def _on_right_click(self, event):
         """右键弹出菜单。"""
@@ -267,7 +275,7 @@ class HemisphereApp:
 
         self._make_param(row1, "半径：", "radius", "200", 0, "px")
         self._make_param(row1, "帧数：", "frames", "60", 1, "")
-        self._make_param(row1, "时长：", "duration", "50", 2, "ms")
+        self._make_param(row1, "转速：", "rps", "0.333", 2, "rps")
         self._make_param(row1, "尺寸：", "size", "", 3, "auto")
 
         row2 = tk.Frame(param_frame, bg=BG)
@@ -275,6 +283,7 @@ class HemisphereApp:
 
         self._make_param(row2, "旋转轴：", "axis", None, 0, "", is_combo=True, combo_vals=["y", "x"])
         self._make_param(row2, "变形：", "power", "1.25", 1, "")
+        self._make_param(row2, "背面亮度：", "back_brightness", "0.65", 2, "")
 
         row3 = tk.Frame(param_frame, bg=BG)
         row3.pack(pady=3)
@@ -342,10 +351,11 @@ class HemisphereApp:
 
         radius = self._get_param("radius", int, 200)
         frames = self._get_param("frames", int, 60)
-        duration = self._get_param("duration", int, 50)
+        rps = self._get_param("rps", float, 1.0/3.0)
         size = self._get_param("size", int, None)
         axis = self._get_param("axis", str, "y")
         power = self._get_param("power", float, 1.25)
+        back_brightness = self._get_param("back_brightness", float, 0.65)
         bg_r = self._get_param("bg_r", int, 0)
         bg_g = self._get_param("bg_g", int, 0)
         bg_b = self._get_param("bg_b", int, 0)
@@ -363,11 +373,13 @@ class HemisphereApp:
                     output_path=output_temp,
                     radius=radius,
                     num_frames=frames,
-                    duration=duration,
+                    duration=None,  # 由 rps 自动计算
                     output_size=size,
                     axis=axis,
                     bg_color=(bg_r, bg_g, bg_b),
                     power=power,
+                    back_brightness=back_brightness,
+                    rps=rps,
                 )
                 self.root.after(0, self._on_done, output_temp)
             except Exception as e:

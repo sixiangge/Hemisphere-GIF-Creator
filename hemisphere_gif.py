@@ -9,9 +9,11 @@ Transform a flat JPG image onto a rotating hemisphere and output an animated GIF
 选项 / Options:
     --radius N      半球半径（像素），默认 200
     --frames N      动画帧数，默认 60
-    --duration N    每帧持续时间（毫秒），默认 50
+    --rps N         旋转速度（转/秒），数值越大越快，默认 0.333（即 3 秒转一圈）
     --size N        输出画面尺寸（像素），默认自动（半径的 2.5 倍）
     --axis y        旋转轴 (y=竖直轴, x=水平轴)，默认 y
+    --power N       球面变形度，>1 中心占比更大，默认 1.25
+    --back-brightness N  背面亮度 (0.0-1.0)，默认 0.65
     --bg R G B      背景色 RGB (0-255)，默认 0 0 0（黑色）
 """
 
@@ -58,11 +60,13 @@ def create_hemisphere_gif(
     output_path: str = "output.gif",
     radius: int = 200,
     num_frames: int = 60,
-    duration: int = 50,
+    duration: int = None,
     output_size: int = None,
     axis: str = "y",
     bg_color: tuple = (0, 0, 0),
     power: float = 1.25,
+    back_brightness: float = 0.65,
+    rps: float = 1.0 / 3.0,
 ):
     """
     核心函数：将输入图片映射到半球面并旋转生成 GIF。
@@ -73,6 +77,23 @@ def create_hemisphere_gif(
     3. 从原图采样 → 得到该像素的颜色
     4. 施加光照增强立体感
     """
+
+    # ── 0. 计算每帧持续时间（从 rps 推导） ─────────────────
+    # GIF 帧延迟以百分之一秒(cs)存储，delay≤2cs 时多数播放器
+    # 会强制按 100ms 处理。因此每帧至少 30ms (3cs) 保证兼容。
+    GIF_MIN_MS = 30
+    if duration is None:
+        target_ms = 1000.0 / (rps * num_frames)
+        if target_ms < GIF_MIN_MS:
+            # 帧数太多会导致每帧延迟过短 → 自动减少帧数以保证 rps 准确
+            effective_frames = max(int(1000.0 / (rps * GIF_MIN_MS)), 4)
+            duration = int(1000.0 / (rps * effective_frames))
+        else:
+            effective_frames = num_frames
+            duration = int(target_ms)
+        duration = max(duration, GIF_MIN_MS)
+    else:
+        effective_frames = num_frames
 
     # ── 1. 加载并预处理输入图片 ──────────────────────────────
     print(f"[1/4] Loading: {input_path}")
@@ -107,18 +128,17 @@ def create_hemisphere_gif(
     z = np.sqrt(np.maximum(z_sq, 0))  # shape: (H, W)
 
     # ── 3. 逐帧渲染 ──────────────────────────────────────────
-    print(f"[2/4] Rendering {num_frames} frames...")
+    print(f"[2/4] Rendering {effective_frames} frames...")
     frames = []
 
     # 正面亮度（直接使用原图颜色）
     front_brightness = 1.0
 
-    # 背面亮度（比正面稍暗）
-    back_brightness = 0.65
+    # 背面亮度（参数控制）
 
-    for frame_idx in range(num_frames):
+    for frame_idx in range(effective_frames):
         # 正角度绕 Y 轴：半球正面从左向右移动（逆时针从上方看）
-        angle = 2.0 * math.pi * frame_idx / num_frames
+        angle = 2.0 * math.pi * frame_idx / effective_frames
         cos_a = math.cos(angle)
         sin_a = math.sin(angle)
 
@@ -196,8 +216,8 @@ def create_hemisphere_gif(
 
         # 进度提示
         if (frame_idx + 1) % 15 == 0 or frame_idx == 0:
-            pct = (frame_idx + 1) / num_frames * 100
-            print(f"   Progress: {frame_idx + 1}/{num_frames} ({pct:.0f}%)")
+            pct = (frame_idx + 1) / effective_frames * 100
+            print(f"   Progress: {frame_idx + 1}/{effective_frames} ({pct:.0f}%)")
 
     # ── 4. 保存 GIF（透明背景）─────────────────────────────────
     print(f"[3/4] Saving GIF: {output_path}")
@@ -237,7 +257,7 @@ def create_hemisphere_gif(
     print(f"[4/4] Done!")
     print(f"    Output: {output_path}")
     print(f"    Size: {file_size / 1024:.1f} KB")
-    print(f"    Frames: {num_frames} | Resolution: {output_size}x{output_size} | Radius: {radius}px")
+    print(f"    Frames: {effective_frames} | Resolution: {output_size}x{output_size} | Radius: {radius}px | Speed: {rps:.3f} rps ({duration}ms/frame)")
 
 
 def main():
@@ -258,27 +278,34 @@ def main():
                         help="半球半径，像素 (默认: 200)")
     parser.add_argument("--frames", type=int, default=60,
                         help="动画帧数 (默认: 60)")
-    parser.add_argument("--duration", type=int, default=50,
-                        help="每帧持续时间，毫秒 (默认: 50)")
+    parser.add_argument("--rps", type=float, default=1.0/3.0,
+                        help="旋转速度，转/秒——数值越大越快 (默认: 0.333，即 3 秒转一圈)")
     parser.add_argument("--size", type=int, default=None,
                         help="输出画面尺寸，像素 (默认: 半径×2.5)")
     parser.add_argument("--axis", choices=["x", "y"], default="y",
                         help="旋转轴: y=竖直轴(像旋转的地球), x=水平轴(像翻书) (默认: y)")
+    parser.add_argument("--power", type=float, default=1.25,
+                        help="球面变形度: >1 中心占比更大, =1 标准球面, <1 更平 (默认: 1.25)")
+    parser.add_argument("--back-brightness", type=float, default=0.65,
+                        help="背面亮度 0.0-1.0 (默认: 0.65)")
     parser.add_argument("--bg", type=int, nargs=3, default=[0, 0, 0],
                         metavar=("R", "G", "B"),
                         help="背景色 RGB 0-255 (默认: 0 0 0)")
 
     args = parser.parse_args()
 
+    # rps 直接控制转速，duration 由公式自动推导
     create_hemisphere_gif(
         input_path=args.input,
         output_path=args.output,
         radius=args.radius,
         num_frames=args.frames,
-        duration=args.duration,
         output_size=args.size,
         axis=args.axis,
         bg_color=tuple(args.bg),
+        power=args.power,
+        back_brightness=args.back_brightness,
+        rps=args.rps,
     )
 
 
